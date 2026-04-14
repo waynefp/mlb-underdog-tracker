@@ -1,0 +1,183 @@
+{
+  "name": "MLB Underdog Odds Collection",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 12,
+              "triggerAtMinute": 7
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 12:07 PM ET",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "regions", "value": "us" },
+            { "name": "markets", "value": "h2h" },
+            { "name": "oddsFormat", "value": "american" }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "fetch-odds",
+      "name": "Fetch MLB Odds",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "notes": "SETUP: Create a 'Query Auth' credential in n8n. Name: 'Odds API'. Set Name=apiKey, Value=<your-key>. Then select it under Credential to connect with."
+    },
+    {
+      "parameters": {
+        "jsCode": "// MLB Underdog Filter Logic\n// Filter thresholds (matching config.py)\nconst TOSSUP_MIN = -130;\nconst TOSSUP_MAX = 130;\nconst EXTREME_FAVORITE_CUTOFF = -300;\nconst UNDERDOG_MIN = 131;\nconst UNDERDOG_MAX = 260;\n\nconst BUCKETS = {\n  slight: [131, 150],\n  moderate: [151, 180],\n  heavy: [181, 220],\n  very_heavy: [221, 260]\n};\n\nfunction getBucket(odds) {\n  for (const [label, [low, high]] of Object.entries(BUCKETS)) {\n    if (odds >= low && odds <= high) return label;\n  }\n  return 'out_of_range';\n}\n\nconst events = $input.first().json.body;\nconst today = new Date().toISOString().split('T')[0];\n\nconst stats = { total: events.length, no_odds: 0, no_sides: 0, tossup: 0, extreme: 0, out_of_range: 0, qualified: 0 };\nconst qualifying = [];\n\nfor (const event of events) {\n  const home = event.home_team;\n  const away = event.away_team;\n  const teamOdds = {};\n  teamOdds[home] = { prices: [], books: {} };\n  teamOdds[away] = { prices: [], books: {} };\n\n  for (const bookmaker of (event.bookmakers || [])) {\n    for (const market of (bookmaker.markets || [])) {\n      if (market.key !== 'h2h') continue;\n      for (const outcome of market.outcomes) {\n        if (teamOdds[outcome.name]) {\n          teamOdds[outcome.name].prices.push(outcome.price);\n          teamOdds[outcome.name].books[bookmaker.key] = outcome.price;\n        }\n      }\n    }\n  }\n\n  if (!teamOdds[home].prices.length || !teamOdds[away].prices.length) {\n    stats.no_odds++;\n    continue;\n  }\n\n  const homeBest = Math.max(...teamOdds[home].prices);\n  const awayBest = Math.max(...teamOdds[away].prices);\n\n  let favorite, underdog;\n  if (homeBest < awayBest) {\n    favorite = home;\n    underdog = away;\n  } else if (awayBest < homeBest) {\n    favorite = away;\n    underdog = home;\n  } else {\n    stats.no_sides++;\n    continue;\n  }\n\n  const favBest = Math.max(...teamOdds[favorite].prices);\n  const dogBest = Math.max(...teamOdds[underdog].prices);\n\n  // Toss-up check\n  if (favBest >= TOSSUP_MIN && favBest <= TOSSUP_MAX && dogBest >= TOSSUP_MIN && dogBest <= TOSSUP_MAX) {\n    stats.tossup++;\n    continue;\n  }\n\n  // Extreme favorite check\n  if (favBest <= EXTREME_FAVORITE_CUTOFF) {\n    stats.extreme++;\n    continue;\n  }\n\n  // Qualifying range check\n  if (dogBest < UNDERDOG_MIN || dogBest > UNDERDOG_MAX) {\n    stats.out_of_range++;\n    continue;\n  }\n\n  const dogPrices = teamOdds[underdog].prices;\n  const favPrices = teamOdds[favorite].prices;\n  const dogAvg = Math.round(dogPrices.reduce((a, b) => a + b, 0) / dogPrices.length * 10) / 10;\n  const favAvg = Math.round(favPrices.reduce((a, b) => a + b, 0) / favPrices.length * 10) / 10;\n\n  const dogBooks = teamOdds[underdog].books;\n  const bestBook = Object.entries(dogBooks).reduce((best, [book, price]) => price > best[1] ? [book, price] : best, ['', -Infinity])[0];\n\n  qualifying.push({\n    json: {\n      date: today,\n      game_id: event.id,\n      commence_time: event.commence_time || '',\n      home_team: home,\n      away_team: away,\n      favorite: favorite,\n      underdog: underdog,\n      dog_odds_best: dogBest,\n      dog_odds_avg: dogAvg,\n      dog_best_book: bestBook,\n      fav_odds_best: favBest,\n      fav_odds_avg: favAvg,\n      home_is_dog: underdog === home,\n      bucket: getBucket(dogBest),\n      num_books: (event.bookmakers || []).length,\n      winner: '',\n      dog_won: '',\n      profit: ''\n    }\n  });\n  stats.qualified++;\n}\n\n// If no qualifying games, still output stats for Telegram\nif (qualifying.length === 0) {\n  return [{ json: { _no_games: true, _stats: stats } }];\n}\n\n// Attach stats to first item for use in Telegram node\nqualifying[0].json._stats = stats;\nreturn qualifying;"
+      },
+      "id": "filter-odds",
+      "name": "Filter Underdogs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "no-games-check",
+              "leftValue": "={{ $json._no_games }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "notTrue" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-has-games",
+      "name": "Has Qualifying Games?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "documentId": { "__rl": true, "mode": "list", "value": "" },
+        "sheetName": { "__rl": true, "mode": "list", "value": "" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $json.date }}",
+            "game_id": "={{ $json.game_id }}",
+            "commence_time": "={{ $json.commence_time }}",
+            "home_team": "={{ $json.home_team }}",
+            "away_team": "={{ $json.away_team }}",
+            "favorite": "={{ $json.favorite }}",
+            "underdog": "={{ $json.underdog }}",
+            "dog_odds_best": "={{ $json.dog_odds_best }}",
+            "dog_odds_avg": "={{ $json.dog_odds_avg }}",
+            "dog_best_book": "={{ $json.dog_best_book }}",
+            "fav_odds_best": "={{ $json.fav_odds_best }}",
+            "fav_odds_avg": "={{ $json.fav_odds_avg }}",
+            "home_is_dog": "={{ $json.home_is_dog }}",
+            "bucket": "={{ $json.bucket }}",
+            "num_books": "={{ $json.num_books }}",
+            "winner": "",
+            "dog_won": "",
+            "profit": ""
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-append",
+      "name": "Append to Tracking Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [880, -60],
+      "notes": "SETUP: Select your Google Sheet and 'Tracking' sheet tab. Create sheet with headers: date, game_id, commence_time, home_team, away_team, favorite, underdog, dog_odds_best, dog_odds_avg, dog_best_book, fav_odds_best, fav_odds_avg, home_is_dog, bucket, num_books, winner, dog_won, profit"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Telegram message from qualifying games\nconst items = $input.all();\nconst stats = items[0].json._stats || {};\nconst today = new Date().toISOString().split('T')[0];\n\nlet msg = `⚾ *MLB Underdog Report — ${today}*\\n\\n`;\nmsg += `📊 *Filter Results:*\\n`;\nmsg += `Games today: ${stats.total || '?'}\\n`;\nmsg += `Toss-ups: ${stats.tossup || 0} | Extreme: ${stats.extreme || 0} | Out of range: ${stats.out_of_range || 0}\\n\\n`;\nmsg += `✅ *${items.length} Qualifying Underdogs:*\\n\\n`;\n\nfor (const item of items) {\n  const g = item.json;\n  if (g._no_games) continue;\n  const homeAway = g.home_is_dog ? '(Home)' : '(Away)';\n  msg += `🔹 *${g.underdog}* ${homeAway} +${g.dog_odds_best}\\n`;\n  msg += `   vs ${g.favorite} (${g.fav_odds_best})\\n`;\n  msg += `   Bucket: ${g.bucket} | Best: ${g.dog_best_book}\\n\\n`;\n}\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "build-telegram-msg",
+      "name": "Build Telegram Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, -60]
+    },
+    {
+      "parameters": {
+        "jsCode": "// No qualifying games today\nconst stats = $input.first().json._stats || {};\nconst today = new Date().toISOString().split('T')[0];\n\nlet msg = `⚾ *MLB Underdog Report — ${today}*\\n\\n`;\nmsg += `No qualifying underdogs today.\\n\\n`;\nmsg += `📊 ${stats.total || '?'} games checked:\\n`;\nmsg += `Toss-ups: ${stats.tossup || 0} | Extreme: ${stats.extreme || 0} | Out of range: ${stats.out_of_range || 0}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "build-no-games-msg",
+      "name": "No Games Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 140]
+    },
+    {
+      "parameters": {
+        "chatId": "",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram-notify",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1320, 0],
+      "notes": "SETUP: Configure Telegram Bot credentials and set chatId"
+    }
+  ],
+  "connections": {
+    "Daily 12:07 PM ET": {
+      "main": [[{ "node": "Fetch MLB Odds", "type": "main", "index": 0 }]]
+    },
+    "Fetch MLB Odds": {
+      "main": [[{ "node": "Filter Underdogs", "type": "main", "index": 0 }]]
+    },
+    "Filter Underdogs": {
+      "main": [[{ "node": "Has Qualifying Games?", "type": "main", "index": 0 }]]
+    },
+    "Has Qualifying Games?": {
+      "main": [
+        [{ "node": "Append to Tracking Sheet", "type": "main", "index": 0 }],
+        [{ "node": "No Games Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Append to Tracking Sheet": {
+      "main": [[{ "node": "Build Telegram Message", "type": "main", "index": 0 }]]
+    },
+    "Build Telegram Message": {
+      "main": [[{ "node": "Send Telegram", "type": "main", "index": 0 }]]
+    },
+    "No Games Message": {
+      "main": [[{ "node": "Send Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "tags": [{ "name": "MLB Underdogs" }]
+}

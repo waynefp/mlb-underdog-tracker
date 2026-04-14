@@ -1,0 +1,214 @@
+{
+  "name": "MLB Underdog Results Update",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 11,
+              "triggerAtMinute": 3
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 11:03 AM ET",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://api.the-odds-api.com/v4/sports/baseball_mlb/scores",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "daysFrom", "value": "1" }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "fetch-scores",
+      "name": "Fetch MLB Scores",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "notes": "SETUP: Use the same 'Odds API' Query Auth credential created for Workflow 1."
+    },
+    {
+      "parameters": {
+        "documentId": { "__rl": true, "mode": "list", "value": "" },
+        "sheetName": { "__rl": true, "mode": "list", "value": "" },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "winner",
+              "lookupValue": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "sheets-read-pending",
+      "name": "Read Pending Games",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [220, 200],
+      "notes": "SETUP: Select your Google Sheet and 'Tracking' sheet. Filter reads rows where 'winner' column is empty."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "merge-data",
+      "name": "Merge Scores + Pending",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [440, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Match completed scores to pending games and calculate P/L\nconst FLAT_BET = 100;\n\nconst allInputs = $input.all();\n\n// The merge node combines all items — scores are in the first input, pending in second\n// We need to extract them from the merged data\nconst firstItem = allInputs[0].json;\nconst scoresData = firstItem.body || [];\n\n// Build scores lookup by game ID\nconst scoresByID = {};\nfor (const event of scoresData) {\n  if (!event.completed || !event.scores) continue;\n  const scores = {};\n  for (const s of event.scores) {\n    if (s.score) scores[s.name] = parseInt(s.score);\n  }\n  if (Object.keys(scores).length >= 2) {\n    const winner = Object.entries(scores).reduce((best, [name, score]) =>\n      score > best[1] ? [name, score] : best, ['', -1])[0];\n    scoresByID[event.id] = winner;\n  }\n}\n\n// Get pending games (from second input onward after merge)\n// With combineAll, each item has both inputs merged\n// We need to access the pending games differently\nconst pendingItems = allInputs.slice(1);\n\nconst updated = [];\nlet wins = 0;\nlet losses = 0;\nlet totalProfit = 0;\n\nfor (const item of pendingItems) {\n  const g = item.json;\n  const gameId = g.game_id;\n  \n  if (!scoresByID[gameId]) continue;\n  \n  const winner = scoresByID[gameId];\n  const dogWon = winner === g.underdog;\n  const dogOdds = parseFloat(g.dog_odds_best);\n  const profit = dogWon ? FLAT_BET * (dogOdds / 100) : -FLAT_BET;\n  \n  if (dogWon) wins++;\n  else losses++;\n  totalProfit += profit;\n  \n  updated.push({\n    json: {\n      game_id: gameId,\n      row_number: g.row_number,\n      winner: winner,\n      dog_won: dogWon,\n      profit: Math.round(profit * 100) / 100,\n      // Pass through for message building\n      underdog: g.underdog,\n      favorite: g.favorite,\n      dog_odds_best: g.dog_odds_best,\n      bucket: g.bucket,\n      date: g.date\n    }\n  });\n}\n\nif (updated.length === 0) {\n  return [{ json: { _no_updates: true, _pending_count: pendingItems.length } }];\n}\n\n// Attach summary to first item\nupdated[0].json._summary = {\n  updated: updated.length,\n  wins: wins,\n  losses: losses,\n  total_profit: Math.round(totalProfit * 100) / 100\n};\n\nreturn updated;"
+      },
+      "id": "match-results",
+      "name": "Match Results & Calc P/L",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "has-updates",
+              "leftValue": "={{ $json._no_updates }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "notTrue" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-has-updates",
+      "name": "Has Updates?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [880, 100]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "__rl": true, "mode": "list", "value": "" },
+        "sheetName": { "__rl": true, "mode": "list", "value": "" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "game_id": "={{ $json.game_id }}",
+            "winner": "={{ $json.winner }}",
+            "dog_won": "={{ $json.dog_won }}",
+            "profit": "={{ $json.profit }}"
+          }
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "sheets-update",
+      "name": "Update Tracking Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1100, 40],
+      "notes": "SETUP: Select your Google Sheet and 'Tracking' sheet. Uses game_id as the match column to find the right row."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build results Telegram message\nconst items = $input.all();\nconst summary = items[0].json._summary || {};\nconst today = new Date().toISOString().split('T')[0];\n\nlet msg = `⚾ *MLB Underdog Results — ${today}*\\n\\n`;\nmsg += `📊 *Updated: ${summary.updated} games*\\n`;\nmsg += `Record today: ${summary.wins}W - ${summary.losses}L\\n`;\nmsg += `P/L today: $${summary.total_profit >= 0 ? '+' : ''}${summary.total_profit}\\n\\n`;\n\nfor (const item of items) {\n  const g = item.json;\n  if (g._no_updates) continue;\n  const icon = g.dog_won ? '✅' : '❌';\n  const pl = g.profit >= 0 ? `+$${g.profit}` : `-$${Math.abs(g.profit)}`;\n  msg += `${icon} *${g.underdog}* (+${g.dog_odds_best}) vs ${g.favorite}\\n`;\n  msg += `   ${g.dog_won ? 'WIN' : 'Loss'} | ${pl} | ${g.bucket}\\n\\n`;\n}\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "build-results-msg",
+      "name": "Build Results Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 40]
+    },
+    {
+      "parameters": {
+        "jsCode": "// No updates message\nconst pending = $input.first().json._pending_count || 0;\nconst today = new Date().toISOString().split('T')[0];\n\nlet msg = `⚾ *MLB Underdog Results — ${today}*\\n\\n`;\nmsg += `No completed games to update.\\n`;\nmsg += `Pending games: ${pending}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "build-no-updates-msg",
+      "name": "No Updates Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 220]
+    },
+    {
+      "parameters": {
+        "chatId": "",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram-notify",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1540, 100],
+      "notes": "SETUP: Configure Telegram Bot credentials and set chatId"
+    }
+  ],
+  "connections": {
+    "Daily 11:03 AM ET": {
+      "main": [
+        [
+          { "node": "Fetch MLB Scores", "type": "main", "index": 0 },
+          { "node": "Read Pending Games", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fetch MLB Scores": {
+      "main": [[{ "node": "Merge Scores + Pending", "type": "main", "index": 0 }]]
+    },
+    "Read Pending Games": {
+      "main": [[{ "node": "Merge Scores + Pending", "type": "main", "index": 1 }]]
+    },
+    "Merge Scores + Pending": {
+      "main": [[{ "node": "Match Results & Calc P/L", "type": "main", "index": 0 }]]
+    },
+    "Match Results & Calc P/L": {
+      "main": [[{ "node": "Has Updates?", "type": "main", "index": 0 }]]
+    },
+    "Has Updates?": {
+      "main": [
+        [{ "node": "Update Tracking Sheet", "type": "main", "index": 0 }],
+        [{ "node": "No Updates Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Tracking Sheet": {
+      "main": [[{ "node": "Build Results Message", "type": "main", "index": 0 }]]
+    },
+    "Build Results Message": {
+      "main": [[{ "node": "Send Telegram", "type": "main", "index": 0 }]]
+    },
+    "No Updates Message": {
+      "main": [[{ "node": "Send Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "tags": [{ "name": "MLB Underdogs" }]
+}

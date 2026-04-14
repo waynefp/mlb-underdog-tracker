@@ -1,0 +1,13 @@
+.env
+data/daily_odds/
+data/results/
+data/tracking.csv
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+venv/
+.venv/
+streamlit/service_account.json
+streamlit/.streamlit/secrets.toml
+n8n/*.csv
+n8n/*.xlsx
