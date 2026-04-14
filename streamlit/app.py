@@ -30,12 +30,20 @@ def load_data():
     ]
 
     # Load service account credentials from Streamlit secrets or file
-    if "gcp_service_account" in st.secrets:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    elif os.path.exists("service_account.json"):
+    creds = None
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    except Exception:
+        pass
+
+    if creds is None and os.path.exists("baseball-data_service_account.json"):
+        creds = Credentials.from_service_account_file("baseball-data_service_account.json", scopes=scopes)
+    elif creds is None and os.path.exists("service_account.json"):
         creds = Credentials.from_service_account_file("service_account.json", scopes=scopes)
-    else:
+
+    if creds is None:
         st.error("No Google credentials found. Add service_account.json or configure Streamlit secrets.")
         return pd.DataFrame()
 
