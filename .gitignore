@@ -11,3 +11,14 @@ streamlit/service_account.json
 streamlit/.streamlit/secrets.toml
 n8n/*.csv
 n8n/*.xlsx
+
+# Credentials — never commit
+baseball-data_service_account.json
+service_account.json
+_streamlit_secrets.toml
+
+# Exported spreadsheet data
+*.csv
+
+# Claude Code project files
+.claude/
