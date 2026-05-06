@@ -11,6 +11,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import os
 from datetime import datetime
+from pitchers import build_pitcher_flag_lookup, get_top_pitcher_ids
 
 # --- Page Config ---
 st.set_page_config(
@@ -226,10 +227,11 @@ c6.metric("ROI", f"{roi:+.1f}%")
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_dash, tab_sim, tab_analysis = st.tabs([
+tab_dash, tab_sim, tab_analysis, tab_pitcher = st.tabs([
     "📊 Dashboard",
     "⚖️ Unit Sizing Simulator",
     "🔬 Sub-Range Analysis",
+    "⚾ Pitcher Filter",
 ])
 
 
@@ -686,6 +688,189 @@ with tab_analysis:
                         legend=dict(orientation="h", yanchor="bottom", y=1.02),
                     )
                     st.plotly_chart(fig_cmp, use_container_width=True)
+
+
+# ===========================================================
+# TAB 4 — Pitcher Filter Backtest
+# ===========================================================
+with tab_pitcher:
+    st.header("⚾ Pitcher Filter Backtest")
+    st.markdown(
+        "Checks whether the **favorite's starting pitcher** had an elite WHIP. "
+        "Games flagged as 'top pitcher' are ones where your underdog faced an ace. "
+        "Compare P/L with vs. without those games to see if filtering them out improves results."
+    )
+
+    if num_resolved == 0:
+        st.info("No resolved games yet.")
+    else:
+        # --- Controls ---
+        ctrl1, ctrl2, ctrl3 = st.columns(3)
+        with ctrl1:
+            whip_thresh = st.slider(
+                "WHIP Threshold", min_value=0.80, max_value=1.40,
+                value=1.10, step=0.05,
+                help="Favorite starters at or below this WHIP are flagged as 'top pitcher'.",
+            )
+        with ctrl2:
+            min_ip = st.slider(
+                "Min Innings Pitched", min_value=5, max_value=50,
+                value=25, step=5,
+                help="Minimum IP to qualify — filters out tiny sample pitchers.",
+            )
+        with ctrl3:
+            season = st.number_input(
+                "Season", min_value=2020, max_value=2030,
+                value=datetime.now().year, step=1,
+            )
+
+        run_backtest = st.button("Run Pitcher Backtest", type="primary")
+
+        if run_backtest:
+            with st.spinner("Fetching pitcher data from MLB Stats API... this takes 30–60 seconds."):
+                try:
+                    flagged = build_pitcher_flag_lookup(
+                        resolved.copy(), whip_thresh, min_ip, int(season)
+                    )
+                    st.session_state["pitcher_backtest"] = flagged
+                    st.session_state["pitcher_params"] = (whip_thresh, min_ip, season)
+                except Exception as e:
+                    st.error(f"Error fetching pitcher data: {e}")
+
+        flagged = st.session_state.get("pitcher_backtest", None)
+        params  = st.session_state.get("pitcher_params", (whip_thresh, min_ip, season))
+
+        if flagged is not None:
+            st.caption(
+                f"Results using WHIP ≤ {params[0]}, min {params[1]} IP, {int(params[2])} season"
+            )
+
+            known      = flagged[flagged["top_pitcher_flag"].notna()]
+            flagged_on = known[known["top_pitcher_flag"] == True]
+            flagged_off= known[known["top_pitcher_flag"] == False]
+            unknown    = flagged[flagged["top_pitcher_flag"].isna()]
+
+            # --- Top-line metrics ---
+            st.markdown("---")
+            st.subheader("Impact Summary")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Resolved",      len(resolved))
+            m2.metric("Top Pitcher Games",   len(flagged_on),
+                      help="Underdog faced an ace — these are the 'risky' games")
+            m3.metric("Normal Games",        len(flagged_off))
+            m4.metric("Pitcher Unknown",     len(unknown),
+                      help="Could not match game to MLB schedule")
+
+            c1, c2, c3 = st.columns(3)
+            all_pl  = float(resolved["profit"].sum())
+            flag_pl = float(flagged_on["profit"].sum()) if not flagged_on.empty else 0.0
+            norm_pl = float(flagged_off["profit"].sum()) if not flagged_off.empty else 0.0
+
+            all_roi  = all_pl  / (len(resolved)    * 100) * 100 if len(resolved)    else 0
+            flag_roi = flag_pl / (len(flagged_on)  * 100) * 100 if len(flagged_on)  else 0
+            norm_roi = norm_pl / (len(flagged_off) * 100) * 100 if len(flagged_off) else 0
+
+            c1.metric("All Games P/L",         f"${all_pl:+,.2f}",  f"ROI {all_roi:+.1f}%")
+            c2.metric("Top Pitcher Games P/L",  f"${flag_pl:+,.2f}", f"ROI {flag_roi:+.1f}%",
+                      delta_color="inverse")
+            c3.metric("Normal Games P/L",       f"${norm_pl:+,.2f}", f"ROI {norm_roi:+.1f}%")
+
+            # --- Cumulative P/L chart: All vs Normal only ---
+            st.markdown("---")
+            st.subheader("Cumulative P/L: All Games vs. Top Pitcher Excluded")
+
+            all_sorted  = resolved.sort_values("date").copy()
+            norm_sorted = flagged_off.sort_values("date").copy() if not flagged_off.empty else pd.DataFrame()
+
+            all_sorted["cum_pl"]  = all_sorted["profit"].cumsum()
+            all_sorted["bet_num"] = range(1, len(all_sorted) + 1)
+
+            fig_p = go.Figure()
+            fig_p.add_trace(go.Scatter(
+                x=all_sorted["bet_num"], y=all_sorted["cum_pl"],
+                mode="lines", name="All Games",
+                line=dict(color="#9E9E9E", width=2, dash="dash"),
+            ))
+
+            if not norm_sorted.empty:
+                norm_sorted["cum_pl"]  = norm_sorted["profit"].cumsum()
+                norm_sorted["bet_num"] = range(1, len(norm_sorted) + 1)
+                fig_p.add_trace(go.Scatter(
+                    x=norm_sorted["bet_num"], y=norm_sorted["cum_pl"],
+                    mode="lines", name="Top Pitcher Excluded",
+                    line=dict(color="#4CAF50", width=2.5),
+                    fill="tonexty", fillcolor="rgba(76,175,80,0.07)",
+                ))
+
+            fig_p.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.4)
+            fig_p.update_layout(
+                xaxis_title="Bet #", yaxis_title="Cumulative P/L ($)",
+                height=420, margin=dict(l=40, r=20, t=20, b=40),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            )
+            st.plotly_chart(fig_p, use_container_width=True)
+
+            # --- Per-bucket breakdown with/without flag ---
+            st.markdown("---")
+            st.subheader("By-Bucket Breakdown")
+            bkt_rows = []
+            for b in BUCKET_ORDER:
+                all_b  = resolved[resolved["new_bucket"] == b]
+                norm_b = flagged_off[flagged_off["new_bucket"] == b] if not flagged_off.empty else pd.DataFrame()
+                flag_b = flagged_on[flagged_on["new_bucket"] == b]   if not flagged_on.empty  else pd.DataFrame()
+                if all_b.empty:
+                    continue
+                g_all  = len(all_b)
+                g_norm = len(norm_b)
+                pl_all = float(all_b["profit"].sum())
+                pl_norm= float(norm_b["profit"].sum()) if not norm_b.empty else 0.0
+                pl_flag= float(flag_b["profit"].sum()) if not flag_b.empty else 0.0
+                bkt_rows.append({
+                    "Bucket":          BUCKET_LABELS.get(b, b),
+                    "All Games":       g_all,
+                    "Top Pitcher":     len(flag_b),
+                    "Normal":          g_norm,
+                    "All P/L":         f"${pl_all:+,.2f}",
+                    "Top Pitcher P/L": f"${pl_flag:+,.2f}",
+                    "Normal P/L":      f"${pl_norm:+,.2f}",
+                    "All ROI":         f"{pl_all/(g_all*100)*100:+.1f}%",
+                    "Normal ROI":      f"{pl_norm/(g_norm*100)*100:+.1f}%" if g_norm else "—",
+                })
+            if bkt_rows:
+                st.dataframe(pd.DataFrame(bkt_rows), use_container_width=True, hide_index=True)
+
+            # --- Top pitchers list ---
+            st.markdown("---")
+            st.subheader(f"Pitchers Flagged (WHIP ≤ {params[0]}, min {params[1]} IP)")
+            _, top_df = get_top_pitcher_ids(params[0], params[1], int(params[2]))
+            if not top_df.empty:
+                top_df["WHIP"] = top_df["WHIP"].map("{:.2f}".format)
+                top_df["ERA"]  = top_df["ERA"].map("{:.2f}".format)
+                top_df["IP"]   = top_df["IP"].map("{:.1f}".format)
+                st.dataframe(top_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No pitchers found at this threshold.")
+
+            # --- Game-by-game detail ---
+            with st.expander("Game-by-game detail (flagged games only)"):
+                if flagged_on.empty:
+                    st.info("No flagged games.")
+                else:
+                    det = flagged_on.sort_values("date")[
+                        ["date", "underdog", "dog_odds_best", "new_bucket",
+                         "favorite", "fav_starter_name", "fav_starter_whip",
+                         "dog_won", "profit"]
+                    ].copy()
+                    det["date"]          = det["date"].dt.strftime("%m/%d")
+                    det["dog_odds_best"] = det["dog_odds_best"].map(lambda x: f"+{x:.0f}")
+                    det["dog_won"]       = det["dog_won"].map({True: "✅", False: "❌"})
+                    det["profit"]        = det["profit"].map(lambda x: f"${x:+,.2f}")
+                    det["fav_starter_whip"] = det["fav_starter_whip"].map(
+                        lambda x: f"{x:.2f}" if pd.notna(x) else "—"
+                    )
+                    det.columns = ["Date", "Underdog", "Odds", "Bucket",
+                                   "Favorite", "Starter", "WHIP", "Won?", "P/L"]
+                    st.dataframe(det, use_container_width=True, hide_index=True)
 
 
 # ---------------------------------------------------------------------------

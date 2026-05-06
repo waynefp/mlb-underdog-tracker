@@ -53,6 +53,10 @@ DEFAULT_MULTIPLIERS = {
     "watch_high":  1.0,
 }
 
+# --- Pitcher Filter ---
+WHIP_THRESHOLD = 1.10   # Favorite's starter WHIP at or below = top pitcher flag
+MIN_IP = 25             # Minimum innings pitched to qualify (filters small samples)
+
 # --- Betting ---
 FLAT_BET = 100  # Dollar amount per unit
 
