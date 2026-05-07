@@ -694,11 +694,63 @@ with tab_analysis:
 # TAB 4 — Pitcher Filter Backtest
 # ===========================================================
 with tab_pitcher:
-    st.header("⚾ Pitcher Filter Backtest")
+    st.header("⚾ Pitcher Filter")
+
+    # --- Today's picks with pitcher info (auto-loads from sheet) ---
+    st.subheader("Today's Starting Pitchers")
+    has_pitcher_cols = "fav_starter_name" in df.columns
+
+    if num_pending == 0:
+        st.info("No pending games today.")
+    elif not has_pitcher_cols:
+        st.info(
+            "Pitcher columns not found in sheet yet. "
+            "Add fav_starter_name, fav_starter_whip, and top_pitcher_flag columns "
+            "to your tracking sheet header row."
+        )
+    else:
+        today_picks = pending.copy()
+        today_picks["fav_starter_whip"] = pd.to_numeric(
+            today_picks.get("fav_starter_whip", pd.Series(dtype=float)), errors="coerce"
+        )
+        today_picks["top_pitcher_flag"] = today_picks.get(
+            "top_pitcher_flag", pd.Series(dtype=str)
+        ).astype(str).str.upper()
+
+        display_rows = []
+        for _, row in today_picks.iterrows():
+            starter = row.get("fav_starter_name", "") or ""
+            whip    = row.get("fav_starter_whip", None)
+            flag    = row.get("top_pitcher_flag", "")
+            is_top  = str(flag).upper() in ("TRUE", "1", "YES")
+
+            flag_icon = "🚩 Top Pitcher" if is_top else ("—" if starter else "Unknown")
+            whip_disp = f"{whip:.2f}" if pd.notna(whip) else "—"
+
+            display_rows.append({
+                "Underdog":   row.get("underdog", ""),
+                "Odds":       f"+{row['dog_odds_best']:.0f}" if pd.notna(row.get("dog_odds_best")) else "",
+                "Bucket":     row.get("bucket", ""),
+                "Favorite":   row.get("favorite", ""),
+                "Starter":    starter if starter else "Not announced",
+                "WHIP":       whip_disp,
+                "Flag":       flag_icon,
+            })
+
+        if display_rows:
+            st.dataframe(
+                pd.DataFrame(display_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No pending games with pitcher data available.")
+
+    st.markdown("---")
+    st.subheader("Historical Backtest")
     st.markdown(
         "Checks whether the **favorite's starting pitcher** had an elite WHIP. "
-        "Games flagged as 'top pitcher' are ones where your underdog faced an ace. "
-        "Compare P/L with vs. without those games to see if filtering them out improves results."
+        "Compare P/L with vs. without games where your underdog faced an ace."
     )
 
     if num_resolved == 0:
