@@ -108,6 +108,8 @@ def load_data():
         df["home_is_dog"] = df["home_is_dog"].astype(str).str.upper().isin(["TRUE", "1", "YES"])
     if "dog_won" in df.columns:
         df["dog_won"] = df["dog_won"].astype(str).str.upper().isin(["TRUE", "1", "YES"])
+    if "top_pitcher_flag" in df.columns:
+        df["top_pitcher_flag"] = df["top_pitcher_flag"].astype(str).str.upper().isin(["TRUE", "1", "YES"])
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
@@ -132,6 +134,8 @@ def assign_new_bucket(odds):
 
 
 def recalc_profit(row, multipliers, base_unit):
+    if row.get("top_pitcher_flag", False):
+        return 0.0
     bucket = row.get("new_bucket", "out_of_range")
     unit = base_unit * multipliers.get(bucket, 0.0)
     if unit == 0:
@@ -212,6 +216,21 @@ if num_resolved > 0:
     resolved = resolved.copy()
     resolved["new_bucket"] = resolved["dog_odds_best"].apply(assign_new_bucket)
 
+# Wagered = resolved games where we actually place a bet (excludes top pitcher flag)
+if "top_pitcher_flag" in resolved.columns:
+    wagered = resolved[~resolved["top_pitcher_flag"].fillna(False)].copy()
+else:
+    wagered = resolved.copy()
+
+# Recalculate P/L metrics using wagered only
+if not wagered.empty:
+    wins     = int(wagered["dog_won"].sum())
+    losses   = len(wagered) - wins
+    total_pl = float(wagered["profit"].sum())
+    roi      = total_pl / (len(wagered) * 100) * 100
+elif num_resolved > 0:
+    wagered  = resolved.copy()
+
 # ---------------------------------------------------------------------------
 # Top metrics — always visible
 # ---------------------------------------------------------------------------
@@ -248,7 +267,7 @@ with tab_dash:
                 use_container_width=True, hide_index=True,
             )
     else:
-        rs = resolved.sort_values("date").copy()
+        rs = wagered.sort_values("date").copy()
         rs["cum_profit"] = rs["profit"].cumsum()
         rs["bet_number"] = range(1, len(rs) + 1)
 
@@ -285,7 +304,7 @@ with tab_dash:
             st.subheader("🪣 Performance by Bucket (new structure)")
             bkt_data = []
             for b in BUCKET_ORDER:
-                sub = resolved[resolved["new_bucket"] == b]
+                sub = wagered[wagered["new_bucket"] == b]
                 if sub.empty:
                     continue
                 g  = len(sub)
@@ -328,7 +347,7 @@ with tab_dash:
             st.subheader("🏠 Home vs Away Underdogs")
             ha_data = []
             for label, is_home in [("Home Dog", True), ("Away Dog", False)]:
-                sub = resolved[resolved["home_is_dog"] == is_home]
+                sub = wagered[wagered["home_is_dog"] == is_home]
                 if sub.empty:
                     continue
                 g = len(sub)
@@ -559,8 +578,8 @@ with tab_analysis:
                 help="Width of each odds band in the table and chart.",
             )
 
-        # Filter by period
-        adf = resolved.copy()
+        # Filter by period (wagered only — top pitcher games excluded from P/L)
+        adf = wagered.copy()
         if period != "All Time":
             n_days = int(period.split()[1])
             cutoff = pd.Timestamp.now() - pd.Timedelta(days=n_days)
