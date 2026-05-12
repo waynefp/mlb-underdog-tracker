@@ -45,16 +45,16 @@ BUCKET_LABELS = {
     "watch_high":  "Watch High  (+250–260)",
 }
 
-TRACK_ONLY = {"watch_low"}
+TRACK_ONLY = {"watch_low", "watch_high"}
 
 DEFAULT_MULTIPLIERS = {
     "watch_low":   0.0,
-    "slight":      1.0,
-    "prime":       1.0,
+    "slight":      1.5,
+    "prime":       1.25,
     "moderate":    0.5,
-    "heavy":       1.0,
+    "heavy":       1.5,
     "very_heavy":  1.25,
-    "watch_high":  1.0,
+    "watch_high":  0.0,
 }
 
 # ---------------------------------------------------------------------------

@@ -39,18 +39,18 @@ BUCKETS = {
 }
 
 # Buckets collected and tracked but NOT included in wager notifications
-TRACK_ONLY_BUCKETS = {"watch_low"}
+TRACK_ONLY_BUCKETS = {"watch_low", "watch_high"}
 
 # Suggested unit multipliers per bucket (relative to FLAT_BET = 1 unit)
 # Used as defaults in the Streamlit simulator
 DEFAULT_MULTIPLIERS = {
     "watch_low":   0.0,   # track only
-    "slight":      1.0,
-    "prime":       1.0,
+    "slight":      1.5,
+    "prime":       1.25,
     "moderate":    0.5,   # dead zone — half unit
-    "heavy":       1.0,
+    "heavy":       1.5,
     "very_heavy":  1.25,
-    "watch_high":  1.0,
+    "watch_high":  0.0,   # track only
 }
 
 # --- Pitcher Filter ---
